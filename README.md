@@ -12,7 +12,7 @@ The rule it enforces is simple: **never let slack — the free space left in the
 - `scripts/audit.mjs` — measures usage by category (system, decisions, code, prose, tool outputs) and reports remaining slack. Exit code `2` when you cross the threshold, so it can gate a workflow.
 - `scripts/compact.mjs` — builds the six-section brief deterministically. No model call, no paraphrased code, safety/auth material copied verbatim.
 - `references/` — the compaction template, the delegation decision tree, and the retention priorities, loaded only when the current layer needs them.
-- `context-slack-config.yaml` — thresholds (`audit_warn: 0.70`, `compact_at: 0.80`, `slack_min: 0.20`), retention order, and delegation defaults.
+- `context-slack-config.yaml` — thresholds (`audit_warn: 0.65`, `compact_at: 0.80`, `slack_min: 0.20`), measured per-category token ratios, retention order, and delegation defaults.
 
 No dependencies. Node 18+.
 
@@ -58,6 +58,8 @@ Both install paths were exercised against this repository at `v0.1.0`:
 | `npx ai-agent-skills install <owner>/context-slack-skill` | installs to `~/.claude/skills/context-slack` |
 | `node scripts/audit.mjs` on a test transcript | reports usage %, remaining slack, exit `0`/`2` by threshold |
 | `node scripts/compact.mjs` on a test transcript | emits the six sections, safety lines kept verbatim |
+| a real Claude Code session file (`.jsonl`, incl. `queue-operation` entries) | parsed correctly; housekeeping entries ignored |
+| a long Portuguese session, measured with a real tokenizer | 4/4 decisions kept, auth lines quoted verbatim, 13.8k → ~330 tokens |
 
 The `audit` numbers are heuristic estimates (characters ÷ 3.8), good for deciding *whether* to prune, not for billing.
 

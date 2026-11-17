@@ -104,20 +104,31 @@ node skills/context-slack/scripts/compact.mjs --transcript session.json --focus 
 
 Six sections, extracted from the transcript and ordered by the retention priorities. Safety/auth/security material is copied verbatim per `compaction.preserve_verbatim`. Anything the script cannot infer is marked `TODO` — the brief is a base you edit, not an autopilot summary.
 
+Decision and constraint detection is heuristic and bilingual (English and Portuguese). It is deliberately conservative: a missed decision line shows up as `TODO` in the brief rather than as a confident wrong summary, so skim section 2 before you discard the transcript.
+
 ## Configuration
 
 `context-slack-config.yaml` is the only place to tune behaviour:
 
 ```yaml
 thresholds:
-  audit_warn: 0.70   # warn at 70% of the usable window
-  compact_at: 0.80   # compact now at 80%
+  audit_warn: 0.65   # warn at 65% of the usable window
+  compact_at: 0.80   # compact now at 80% (= 1 - slack_min by design)
   slack_min: 0.20    # free space that must always remain
+token_estimate:
+  by_category:
+    tool_outputs: 2.7   # measured, see below
 compaction:
   preserve_verbatim: [security, auth, secrets, ...]
 delegation:
   default: inline
 ```
+
+### Why these numbers
+
+The token ratios are measured, not guessed. Running a real tokenizer over representative material gives **4.0–4.5 chars/token** for English prose, **3.9** for code, and **2.6** for JSON-shaped tool output. A single average of 3.8 therefore under-counts tool output — usually the biggest category, and the one worth pruning — by roughly 45%. The config splits the ratio per category and rounds it slightly pessimistic, so the audit errs toward warning early.
+
+The thresholds follow from that: a compaction brief costs about 1–2k tokens, while finishing the work already in flight needs 10–15% of the window. Warning at 70% left too little room to land that work, so the warn line sits at **65%**; compaction triggers at **80%**, which is exactly where the 20% floor would break. `slack_min` stays at 0.20 — it is the promise the skill exists to keep.
 
 Pass a different file with `--config path/to/config.yaml`. The scripts read the subset they need with a tiny built-in YAML reader, so there are no dependencies to install.
 

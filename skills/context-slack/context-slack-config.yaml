@@ -4,11 +4,17 @@
 version: 1
 
 thresholds:
-  # Warn once this share of the usable window is consumed.
-  audit_warn: 0.70
-  # Compact now once this share is consumed.
+  # Warn once this share of the usable window is consumed. Calibrated at 0.65:
+  # a compaction brief costs ~1-2k tokens, while finishing the work already in
+  # flight needs ~10-15% of the window. Warning at 0.70 left too little room to
+  # land that work before the forced summary; 0.65 keeps warn and compact far
+  # enough apart to act on the warning.
+  audit_warn: 0.65
+  # Compact now once this share is consumed. Equals 1 - slack_min by design:
+  # the moment the floor would be breached is the moment to compact.
   compact_at: 0.80
-  # Hard floor: free space that must always remain.
+  # Hard floor: free space that must always remain. This is the whole point of
+  # the skill; lowering it below 0.20 turns compaction into a lossy emergency.
   slack_min: 0.20
 
 context_window:
@@ -16,9 +22,20 @@ context_window:
   reserve_output_tokens: 8000
 
 token_estimate:
-  # Rough char-per-token ratio used by the scripts. 3.6 is safer for code and
-  # non-English text; 4 is a fair average for English prose.
+  # Fallback ratio for anything not listed below.
   chars_per_token: 3.8
+  # Measured with a real tokenizer over representative material (2026-11):
+  #   English prose 4.0-4.5 | this repo's code 3.9 | JS/JSON tool output 2.6
+  # JSON-heavy tool output is the densest and usually the largest category, so
+  # the old flat 3.8 under-counted it by ~45% — exactly the content worth
+  # pruning. Values below are rounded slightly pessimistic (fewer chars per
+  # token = higher estimate) so the audit errs toward warning early.
+  by_category:
+    system: 4.0
+    decisions: 4.1
+    prose: 4.1
+    code: 3.7
+    tool_outputs: 2.7
 
 # Order in which content is dropped under pressure. Earlier entries are kept
 # longer. Change only with a reason written next to it.

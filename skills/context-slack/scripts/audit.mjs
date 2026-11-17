@@ -185,6 +185,27 @@ function blockText(block) {
   return '';
 }
 
+/** Accepts an array, a { messages: [] } object, JSONL (one object per line), or plain text. */
+function parseTranscript(raw) {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      // fall through to JSONL / text
+    }
+  }
+  const lines = trimmed.split(/\r?\n/).filter((line) => line.trim().startsWith('{'));
+  if (lines.length) {
+    try {
+      return lines.map((line) => JSON.parse(line));
+    } catch {
+      // fall through to text
+    }
+  }
+  return raw;
+}
+
 function normalise(raw) {
   let data = raw;
   if (Array.isArray(data)) return data;
@@ -195,6 +216,32 @@ function normalise(raw) {
     if (typeof data.content === 'string' || Array.isArray(data.content)) return [data];
   }
   return [{ role: 'user', content: String(raw) }];
+}
+
+/**
+ * Claude Code session files store { type, message: { role, content } }; some
+ * entries (summary, file-history-snapshot) carry no message at all.
+ */
+const MESSAGE_TYPES = new Set(['user', 'assistant', 'system', 'tool', 'function', 'developer']);
+
+function sessionEntries(items) {
+  const out = [];
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const message = item.message && typeof item.message === 'object' ? item.message : item;
+    if (message.content === undefined && message.text === undefined) continue;
+    if (message.role) {
+      out.push(message);
+      continue;
+    }
+    // Session files also carry housekeeping entries (queue-operation, summary,
+    // snapshots). Only recognise the ones that are real turns.
+    const type = String(message.type || '').toLowerCase();
+    if (MESSAGE_TYPES.has(type)) {
+      out.push({ role: type, content: message.content !== undefined ? message.content : message.text });
+    }
+  }
+  return out;
 }
 
 function messageParts(message) {
@@ -220,8 +267,10 @@ function messageParts(message) {
 
 // ------------------------------------------------------------ classification
 
+// Bilingual on purpose: a session in Portuguese must not lose its decisions
+// just because the heuristic was written in English.
 const DECISION_RE =
-  /\b(decid(?:e|ed|ing|ion)|we (?:will|'ll|should|agreed)|chose|chosen|going with|instead of|rejected|approved|plan is|approach(?:es)? is|root cause|trade-?off|constraint|requirement|must not|do not|never|always)\b/i;
+  /\b(decid(?:e|ed|ing|ion)|we (?:will|'ll|should|agreed)|chose|chosen|going with|instead of|rejected|approved|plan is|approach(?:es)? is|root cause|trade-?off|constraint|requirement|must not|do not|never|always)\b|\b(?:decid(?:i|imos|ido|ida)|escolh(?:i|emos|ido|ida)|opt(?:ei|amos|ado|ada)|vamos (?:usar|fazer|seguir|com)|em vez de|rejeit(?:ei|amos)|aprov(?:ei|amos)|requisito|restri[çc][ãa]o|n[ãa]o podemos|nunca|sempre)\b/i;
 
 const FENCE_RE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
 
@@ -236,37 +285,43 @@ function classify(parts, config) {
   const chars = { system: 0, decisions: 0, code: 0, prose: 0, tool_outputs: 0 };
   const heaviest = [];
 
+  // Measured chars/token by category (see context-slack-config.yaml): JSON-heavy
+  // tool output packs ~1.5x the tokens of the same character count of prose.
+  const byCategory = config.token_estimate.by_category || {};
+  const ratio = (key) =>
+    Number(byCategory[key]) || Number(config.token_estimate.chars_per_token) || 4;
+
   for (const part of parts) {
-    const total = part.text.length;
-    heaviest.push({ role: part.role, chars: total, preview: part.text.slice(0, 70).replace(/\s+/g, ' ') });
+    const partChars = { system: 0, decisions: 0, code: 0, prose: 0, tool_outputs: 0 };
 
     if (part.tool) {
-      chars.tool_outputs += total;
-      continue;
-    }
-    if (part.role === 'system' || part.role === 'developer') {
-      chars.system += total;
-      continue;
+      partChars.tool_outputs = part.text.length;
+    } else if (part.role === 'system' || part.role === 'developer') {
+      partChars.system = part.text.length;
+    } else {
+      let remaining = part.text;
+      for (const fence of remaining.match(FENCE_RE) || []) {
+        partChars.code += fence.length;
+        remaining = remaining.replace(fence, ' ');
+      }
+      for (const sentence of splitSentences(remaining)) {
+        if (DECISION_RE.test(sentence)) partChars.decisions += sentence.length;
+        else partChars.prose += sentence.length;
+      }
     }
 
-    let remaining = part.text;
-    const fences = remaining.match(FENCE_RE) || [];
-    for (const fence of fences) {
-      chars.code += fence.length;
-      remaining = remaining.replace(fence, ' ');
+    let partTokens = 0;
+    for (const [key, value] of Object.entries(partChars)) {
+      chars[key] += value;
+      partTokens += Math.ceil(value / ratio(key));
     }
-
-    for (const sentence of splitSentences(remaining)) {
-      if (DECISION_RE.test(sentence)) chars.decisions += sentence.length;
-      else chars.prose += sentence.length;
-    }
+    heaviest.push({ role: part.role, tokens: partTokens, preview: part.text.slice(0, 70).replace(/\s+/g, ' ') });
   }
 
-  const perToken = Number(config.token_estimate.chars_per_token) || 4;
   const tokens = {};
-  for (const [key, value] of Object.entries(chars)) tokens[key] = Math.ceil(value / perToken);
+  for (const [key, value] of Object.entries(chars)) tokens[key] = Math.ceil(value / ratio(key));
 
-  heaviest.sort((a, b) => b.chars - a.chars);
+  heaviest.sort((a, b) => b.tokens - a.tokens);
   return { chars, tokens, heaviest: heaviest.slice(0, 5) };
 }
 
@@ -314,12 +369,18 @@ function buildReport({ tokens, chars, heaviest, window, usable, usedTokens, conf
   lines.push('| --- | ---: | ---: |');
   lines.push(...rows);
   lines.push('');
-  lines.push(`Basis: ${totalChars.toLocaleString('en-US')} characters ÷ ${config.token_estimate.chars_per_token} chars/token.`);
+  const byCategory = config.token_estimate.by_category || {};
+  const basis = Object.entries(byCategory)
+    .map(([key, value]) => `${labels[key] || key} ${value}`)
+    .join(', ');
+  lines.push(
+    `Basis: ${totalChars.toLocaleString('en-US')} characters ÷ per-category chars/token${basis ? ` (${basis})` : ''}.`,
+  );
   lines.push('');
   if (heaviest.length) {
     lines.push('Heaviest messages:');
     for (const item of heaviest) {
-      lines.push(`- \`${item.role}\` · ${Math.ceil(item.chars / config.token_estimate.chars_per_token).toLocaleString('en-US')} tok · "${item.preview}${item.preview.length >= 70 ? '…' : ''}"`);
+      lines.push(`- \`${item.role}\` · ${item.tokens.toLocaleString('en-US')} tok · "${item.preview}${item.preview.length >= 70 ? '…' : ''}"`);
     }
     lines.push('');
   }
@@ -362,16 +423,8 @@ function main() {
 
   if (!raw.trim()) die('transcript is empty');
 
-  let data = raw;
-  if (raw.trim().startsWith('{') || raw.trim().startsWith('[')) {
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      data = raw; // plain text that merely starts with a bracket
-    }
-  }
-
-  const messages = normalise(data);
+  const data = parseTranscript(raw);
+  const messages = sessionEntries(normalise(data));
   const parts = messages.flatMap(messageParts);
   const { chars, tokens, heaviest } = classify(parts, config);
 

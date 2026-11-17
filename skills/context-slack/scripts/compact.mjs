@@ -172,6 +172,27 @@ function blockText(block) {
   return '';
 }
 
+/** Accepts an array, a { messages: [] } object, JSONL (one object per line), or plain text. */
+function parseTranscript(raw) {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      // fall through to JSONL / text
+    }
+  }
+  const lines = trimmed.split(/\r?\n/).filter((line) => line.trim().startsWith('{'));
+  if (lines.length) {
+    try {
+      return lines.map((line) => JSON.parse(line));
+    } catch {
+      // fall through to text
+    }
+  }
+  return raw;
+}
+
 function normalise(raw) {
   if (Array.isArray(raw)) return raw;
   if (raw && typeof raw === 'object') {
@@ -183,44 +204,62 @@ function normalise(raw) {
   return [{ role: 'user', content: String(raw) }];
 }
 
+const MESSAGE_TYPES = new Set(['user', 'assistant', 'system', 'tool', 'function', 'developer']);
+
 function toMessages(raw) {
-  return normalise(raw).map((message) => {
+  const items = normalise(raw)
+    .map((item) =>
+      item && typeof item === 'object' && item.message && typeof item.message === 'object'
+        ? item.message
+        : item,
+    )
+    .filter(
+      (item) => item && typeof item === 'object' && (item.content !== undefined || item.text !== undefined),
+    );
+
+  return items.map((message) => {
     if (typeof message === 'string') return { role: 'user', text: message, tool: false };
     const role = String(message.role || message.author || message.type || 'user').toLowerCase();
     const content = message.content !== undefined ? message.content : message.text;
     const tool = role === 'tool' || role === 'function';
-    const text = Array.isArray(content)
+    const raw = Array.isArray(content)
       ? content
-          .map((block) => {
-            const type = String((block && block.type) || '').toLowerCase();
-            return blockText(block);
-          })
+          .map((block) => blockText(block))
           .filter(Boolean)
           .join('\n')
       : blockText(content);
+    // Injected system prompts and reminders are host instructions, not session
+    // content: keeping them would fill the brief with things nobody decided.
+    const text = raw.replace(REMINDER_RE, ' ');
     return { role, text: text || '', tool };
   });
 }
 
 // ----------------------------------------------------------------- extraction
 
+// Bilingual on purpose: a session in Portuguese must not lose its decisions
+// just because the heuristic was written in English.
 const DECISION_RE =
-  /\b(decid(?:e|ed|ing|ion)|we (?:will|'ll|should|agreed)|chose|chosen|going with|instead of|rejected|approved|plan is|approach(?:es)? is|root cause|trade-?off)\b/i;
+  /\b(decid(?:e|ed|ing|ion)|we (?:will|'ll|should|agreed)|chose|chosen|going with|instead of|rejected|approved|plan is|approach(?:es)? is|root cause|trade-?off)\b|\b(?:decid(?:i|imos|ido|ida)|escolh(?:i|emos|ido|ida)|opt(?:ei|amos|ado|ada)|vamos (?:usar|fazer|seguir|com)|em vez de|rejeit(?:ei|amos)|aprov(?:ei|amos))\b/i;
 
 const CONSTRAINT_RE =
-  /\b(must|must not|never|required|requirement|only|forbidden|do not|cannot|can't|constraint|compatib\w*|policy|deadline|hard requirement)\b/i;
+  /\b(must|must not|never|required|requirement|only|forbidden|do not|cannot|can't|constraint|compatib\w*|policy|deadline|hard requirement)\b|\b(?:deve(?:m)?|precisa(?:m)?|obrigat[óo]ri[oa]s?|jamais|nunca|somente|apenas|proibido|n[ãa]o pode(?:m)?|limite|requisito)\b/i;
 
 const FENCE_RE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
 
-const NEXT_RE = /\b(next|todo|to do|remaining|pending|follow-?up|then we|after that|blocker|waiting on)\b/i;
+const NEXT_RE =
+  /\b(next|todo|to do|remaining|pending|follow-?up|then we|after that|blocker|waiting on)\b|\b(?:pr[óo]ximo(?: passo)?|falta(?:m)?|pendente(?:s)?|bloqueado|aguardando|a seguir)\b/i;
 
 const FILE_RE =
   /(?:^|[\s`'"(])((?:\.{0,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\.(?:[cm]?[jt]sx?|json|ya?ml|md|py|rb|go|rs|java|kt|swift|sh|bash|sql|html|css|scss|toml|ini|env|txt|lock))(?=[\s`'").,:;]|$)/g;
 
+const REMINDER_RE = /<system-reminder>[\s\S]*?<\/system-reminder>/gi;
+const SKIP_ROLES = new Set(['system', 'developer']);
+
 function sentences(text) {
   return text
     .split(/(?<=[.!?])\s+|\n+/)
-    .map((line) => line.replace(/^[-*•]\s*/, '').trim())
+    .map((line) => line.replace(/^[-*•\s]+/, '').trim())
     .filter((line) => line.length > 2);
 }
 
@@ -280,7 +319,9 @@ function buildBrief({ messages, focus, config, headings }) {
     ? config.compaction.preserve_verbatim
     : [];
 
-  const chat = messages.filter((message) => !message.tool && message.text.trim());
+  const chat = messages.filter(
+    (message) => !message.tool && !SKIP_ROLES.has(message.role) && message.text.trim(),
+  );
   const focusLower = (focus || '').toLowerCase();
 
   const scored = (sentence) => (focusLower && sentence.toLowerCase().includes(focusLower) ? 1 : 0);
@@ -429,14 +470,7 @@ function main() {
   const raw = readFileSync(file, 'utf8');
   if (!raw.trim()) die('transcript is empty');
 
-  let data = raw;
-  if (raw.trim().startsWith('{') || raw.trim().startsWith('[')) {
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      data = raw;
-    }
-  }
+  const data = parseTranscript(raw);
 
   const config = loadConfig(args.config ? path.resolve(args.config) : DEFAULT_CONFIG);
   const headings = templateHeadings(args.template ? path.resolve(args.template) : DEFAULT_TEMPLATE);
