@@ -61,7 +61,7 @@ Both install paths were exercised against this repository at `v0.1.0`:
 | a real Claude Code session file (`.jsonl`, incl. `queue-operation` entries) | parsed correctly; housekeeping entries ignored |
 | a long Portuguese session, measured with a real tokenizer | 4/4 decisions kept, auth lines quoted verbatim, 13.8k → ~330 tokens |
 
-The `audit` numbers are heuristic estimates (characters ÷ 3.8), good for deciding *whether* to prune, not for billing.
+The `audit` numbers are estimates from measured per-category char/token ratios, good for deciding *whether* to prune, not for billing.
 
 ## License
 
