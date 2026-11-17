@@ -6,6 +6,16 @@ An agent session degrades long before it crashes: the same facts get restated, f
 
 Works with any agent that reads `SKILL.md` (Claude Code, Claude.ai, and other agent runtimes through [ai-agent-skills](https://www.npmjs.com/package/ai-agent-skills)), plus two dependency-free Node scripts.
 
+## In plain words
+
+Picture the context window as the desk the agent works on. Every file it reads, every command it runs, every turn of conversation piles paper on that desk. When the desk fills up the work gets worse before it stops: the agent re-reads what it already read, restates what was already settled, and starts summarising things it still needs.
+
+Slack is the clear corner of that desk, and this skill keeps at least 20% of it clear at all times — room to read one more file and finish the job, instead of being forced to throw things away at the worst moment.
+
+It is not a summariser you run at the end. It is a short routine you run *while* working: measure the desk, clear what is cheap to lose, write down what must survive in six fixed lines, and decide consciously whether the next step even belongs in this conversation.
+
+Concretely, from a real session: 13,781 tokens compacted to a ~330-token brief, with all four active decisions kept and the authentication requirements quoted word for word.
+
 ## What it actually does
 
 The skill runs four layers, in order, and stops as soon as slack is back above the floor:
@@ -84,7 +94,7 @@ Output:
 - Window (usable): 192,000 tokens (200,000 minus 8,000 reserved)
 - Estimated usage: 148,300 tokens (77.2%)
 - Remaining slack: 22.8% (target ≥ 20.0%)
-- Status: WARN (warn at 70.0%, compact at 80.0%)
+- Status: WARN (warn at 65.0%, compact at 80.0%)
 
 | Category | Tokens | Share |
 | --- | ---: | ---: |
@@ -94,7 +104,7 @@ Output:
 
 Exit code `0` means healthy, `2` means you are at or above the warn threshold — so the audit can gate a workflow in a one-liner.
 
-The transcript may be a JSON array of messages, `{ "messages": [...] }`, or plain text. Messages accept `{ "role", "content" }` where `content` is a string or an array of blocks. Tokens are estimated as characters ÷ `token_estimate.chars_per_token` (3.8 by default) — close enough to decide *whether* to prune, not a billing figure.
+The transcript may be a JSON array of messages, `{ "messages": [...] }`, or plain text. Messages accept `{ "role", "content" }` where `content` is a string or an array of blocks. Tokens are estimated from measured per-category char/token ratios (see [Why these numbers](#why-these-numbers)) — close enough to decide *whether* to prune, not a billing figure.
 
 ### Build a compaction brief
 
