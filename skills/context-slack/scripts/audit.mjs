@@ -179,7 +179,12 @@ function parseYaml(source) {
 function loadConfig(configPath) {
   const defaults = {
     thresholds: { audit_warn: 0.7, compact_at: 0.8, slack_min: 0.2 },
-    context_window: { tokens: 200000, reserve_output_tokens: 8000 },
+    context_window: {
+      tokens: 200000,
+      reserve_output_tokens: 8000,
+      reserve_ratio: 0.1,
+      reserve_floor_tokens: 1024,
+    },
     token_estimate: { chars_per_token: 3.8 },
     retention_priority: ['decisions', 'constraints', 'code', 'examples', 'prose'],
     compaction: { preserve_verbatim: [], max_bullets_per_section: 12, max_chars_per_bullet: 240 },
@@ -372,6 +377,20 @@ function percent(value) {
   return `${(value * 100).toFixed(1)}%`;
 }
 
+/**
+ * Output reservation scales with the window: min(cap, max(floor, ratio * window)).
+ * A flat 8000 was right for 200k and reserved half of a 16k window.
+ */
+function reserveFor(window, config) {
+  const cap = Number(config.context_window.reserve_output_tokens);
+  const ratio = Number(config.context_window.reserve_ratio);
+  const floor = Number(config.context_window.reserve_floor_tokens);
+  const effectiveCap = Number.isFinite(cap) && cap > 0 ? cap : 8000;
+  const effectiveRatio = Number.isFinite(ratio) && ratio >= 0 && ratio <= 0.5 ? ratio : 0.1;
+  const effectiveFloor = Number.isFinite(floor) && floor > 0 ? floor : 1024;
+  return Math.round(Math.min(effectiveCap, Math.max(effectiveFloor, window * effectiveRatio)));
+}
+
 function buildReport({ tokens, chars, heaviest, window, usable, usedTokens, config }) {
   const used = usedTokens / usable;
   const slack = 1 - used;
@@ -401,7 +420,9 @@ function buildReport({ tokens, chars, heaviest, window, usable, usedTokens, conf
   const lines = [];
   lines.push('# context-slack audit');
   lines.push('');
-  lines.push(`- Window (usable): **${usable.toLocaleString('en-US')}** tokens (${window.toLocaleString('en-US')} minus ${(window - usable).toLocaleString('en-US')} reserved)`);
+  lines.push(
+    `- Window (usable): **${usable.toLocaleString('en-US')}** tokens (${window.toLocaleString('en-US')} minus ${(window - usable).toLocaleString('en-US')} reserved for output)`,
+  );
   lines.push(`- Estimated usage: **${usedTokens.toLocaleString('en-US')}** tokens (${percent(used)})`);
   // A negative slack is honest but confusing to read; say it in words.
   const slackText = slack < 0 ? `over budget by ${percent(-slack)}` : percent(slack);
@@ -478,9 +499,7 @@ function main() {
       : Number.isFinite(configuredWindow) && configuredWindow > 0
         ? configuredWindow
         : 200000;
-  const configuredReserve = Number(config.context_window.reserve_output_tokens);
-  const reserved = Number.isFinite(configuredReserve) && configuredReserve > 0 ? configuredReserve : 0;
-  const usable = Math.max(window - reserved, 1);
+  const usable = Math.max(window - reserveFor(window, config), 1);
   const usedTokens = Object.values(tokens).reduce((sum, value) => sum + value, 0);
 
   const { text, status, used, slack } = buildReport({

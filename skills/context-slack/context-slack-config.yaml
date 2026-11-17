@@ -19,7 +19,12 @@ thresholds:
 
 context_window:
   tokens: 200000
+  # Space to keep for the reply and tool calls. A flat 8000 is right for a 200k
+  # window and absurd for a 16k one, where it would reserve half of everything,
+  # so the reservation is `min(cap, max(floor, tokens * reserve_ratio))`.
   reserve_output_tokens: 8000
+  reserve_ratio: 0.10
+  reserve_floor_tokens: 1024
 
 # Mask credential-shaped strings (tokens, keys, private keys, passwords in URLs)
 # in reports and briefs. Set to false only if you know the output never leaves

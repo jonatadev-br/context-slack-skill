@@ -138,6 +138,8 @@ delegation:
 
 The token ratios are measured, not guessed. Running a real tokenizer over representative material gives **4.0–4.5 chars/token** for English prose, **3.9** for code, and **2.6** for JSON-shaped tool output. A single average of 3.8 therefore under-counts tool output — usually the biggest category, and the one worth pruning — by roughly 45%. The config splits the ratio per category and rounds it slightly pessimistic, so the audit errs toward warning early.
 
+Output reservation scales with the window (`min(cap, max(floor, 10% of window))`): a flat 8,000 is right for a 200k window and would reserve half of a 16k one, which is exactly what the end-to-end test caught.
+
 The thresholds follow from that: a compaction brief costs about 1–2k tokens, while finishing the work already in flight needs 10–15% of the window. Warning at 70% left too little room to land that work, so the warn line sits at **65%**; compaction triggers at **80%**, which is exactly where the 20% floor would break. `slack_min` stays at 0.20 — it is the promise the skill exists to keep.
 
 Pass a different file with `--config path/to/config.yaml`. The scripts read the subset they need with a tiny built-in YAML reader, so there are no dependencies to install.

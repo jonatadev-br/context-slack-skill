@@ -410,7 +410,9 @@ function buildBrief({ messages, focus, config, headings }) {
     for (const sentence of sentences(prose)) {
       if (DECISION_RE.test(sentence)) uniquePush(decisions, seenDecisions, sentence);
       else if (CONSTRAINT_RE.test(sentence)) uniquePush(constraints, seenConstraints, sentence);
-      if (NEXT_RE.test(sentence)) uniquePush(nextSteps, seenNext, sentence);
+      // A sentence carrying inline code is usually a report of what was done,
+      // not the next action; `next()` inside backticks used to leak in here.
+      if (NEXT_RE.test(sentence) && !sentence.includes('`')) uniquePush(nextSteps, seenNext, sentence);
       for (const match of sentence.matchAll(FILE_RE)) uniquePush(files, seenFiles, match[1]);
     }
   }
