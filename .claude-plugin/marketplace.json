@@ -1,0 +1,8 @@
+{
+  "name": "context-slack-marketplace",
+  "description": "Skills for keeping agent sessions healthy — context-slack audits, prunes, compacts and delegates to preserve free space in the context window.",
+  "owner": { "name": "Jonatã" },
+  "plugins": [
+    { "name": "context-slack", "source": "./", "description": "Preserve context slack in the context window" }
+  ]
+}

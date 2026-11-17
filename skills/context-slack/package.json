@@ -1,0 +1,13 @@
+{
+  "name": "context-slack-skill",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "context-slack-audit": "./scripts/audit.mjs",
+    "context-slack-compact": "./scripts/compact.mjs"
+  },
+  "scripts": {
+    "audit": "node scripts/audit.mjs",
+    "compact": "node scripts/compact.mjs"
+  }
+}

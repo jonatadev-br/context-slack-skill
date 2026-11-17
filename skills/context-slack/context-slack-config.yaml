@@ -1,0 +1,56 @@
+# context-slack — calibration
+# Fractions are of the usable window (context_window minus reserved output tokens).
+
+version: 1
+
+thresholds:
+  # Warn once this share of the usable window is consumed.
+  audit_warn: 0.70
+  # Compact now once this share is consumed.
+  compact_at: 0.80
+  # Hard floor: free space that must always remain.
+  slack_min: 0.20
+
+context_window:
+  tokens: 200000
+  reserve_output_tokens: 8000
+
+token_estimate:
+  # Rough char-per-token ratio used by the scripts. 3.6 is safer for code and
+  # non-English text; 4 is a fair average for English prose.
+  chars_per_token: 3.8
+
+# Order in which content is dropped under pressure. Earlier entries are kept
+# longer. Change only with a reason written next to it.
+retention_priority:
+  - decisions
+  - constraints
+  - code
+  - examples
+  - prose
+
+compaction:
+  # Content matching these topics is always copied verbatim, never summarized.
+  preserve_verbatim:
+    - security
+    - auth
+    - authorization
+    - secrets
+    - credentials
+    - crypto
+    - permissions
+    - payments
+    - migrations
+    - data-loss
+  max_bullets_per_section: 12
+  max_chars_per_bullet: 240
+
+delegation:
+  # inline | fork | fresh-subagent
+  default: inline
+  fork_when:
+    focus_shift: true
+    context_pressure_at_least: 0.60
+  fresh_subagent_when:
+    task_is_self_contained: true
+    context_pressure_at_least: 0.75

@@ -1,0 +1,10 @@
+{
+  "name": "context-slack",
+  "version": "0.1.0",
+  "description": "Context-slack skill: audit, prune, compact, and delegate consciously to preserve free space in the context window.",
+  "author": { "name": "Jonatã" },
+  "repository": "https://github.com/jonataprezende-commits/context-slack-skill",
+  "homepage": "https://github.com/jonataprezende-commits/context-slack-skill",
+  "license": "MIT",
+  "icon": ".claude-plugin/icon.png"
+}

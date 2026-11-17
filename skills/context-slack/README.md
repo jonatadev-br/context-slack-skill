@@ -1,0 +1,148 @@
+# context-slack
+
+**Keep the last 20% of the context window free — on purpose.**
+
+An agent session degrades long before it crashes: the same facts get restated, files get re-read, and the model starts summarizing what it needs instead of doing the work. The cause is usually not a bad model, it is a full window. *Context slack* is the free space left in that window, and this skill is a small discipline for protecting it: measure, prune, compact in a fixed shape, and delegate deliberately.
+
+Works with any agent that reads `SKILL.md` (Claude Code, Claude.ai, and other agent runtimes through [ai-agent-skills](https://www.npmjs.com/package/ai-agent-skills)), plus two dependency-free Node scripts.
+
+## What it actually does
+
+The skill runs four layers, in order, and stops as soon as slack is back above the floor:
+
+| Layer | Question it answers | Tool |
+| --- | --- | --- |
+| **A. Audit** | How full is the window, and with what? | `scripts/audit.mjs` |
+| **B. Prune** | What can go without losing a decision? | `references/retention-priorities.md` |
+| **C. Compact** | What must survive into the next context? | `scripts/compact.mjs` + `references/compaction-template.md` |
+| **D. Delegate** | Inline, fork, or fresh subagent? | `references/delegation-decision-tree.md` |
+
+The rules are deliberately strict:
+
+- Never remove an active decision.
+- Never summarize code without preserving syntax.
+- Never use lossy summarization on security, auth or permission material — it is copied verbatim.
+- Never let slack fall below 20%.
+
+Layer A gives you numbers instead of a feeling. Layer C produces a six-section brief (objective, decisions, current state, files touched, constraints, next step) that is deterministic — no model call, no paraphrase of your code — so you can review it and trust it.
+
+## Install
+
+### As a local skill
+
+```bash
+git clone https://github.com/jonataprezende-commits/context-slack-skill.git
+cp -r context-slack-skill/skills/context-slack ~/.claude/skills/context-slack
+```
+
+The skill is then available as `context-slack` in Claude Code. To keep working on it in place, symlink instead:
+
+```bash
+ln -s "$(pwd)/context-slack-skill/skills/context-slack" ~/.claude/skills/context-slack
+```
+
+### Cross-agent
+
+```bash
+npx ai-agent-skills install jonataprezende-commits/context-slack-skill
+```
+
+This installs the skill into the agents it detects on your machine. Add `--list` to preview what would be installed without writing anything:
+
+```bash
+npx ai-agent-skills install jonataprezende-commits/context-slack-skill --list
+```
+
+### As a Claude Code plugin
+
+```
+/plugin marketplace add jonataprezende-commits/context-slack-skill
+/plugin install context-slack@context-slack-marketplace
+```
+
+Both install paths ship the same skill; the plugin path also gets managed updates through `/plugin`.
+
+## Usage
+
+### Audit a session
+
+From the repository root:
+
+```bash
+node skills/context-slack/scripts/audit.mjs --transcript session.json
+cat session.txt | node skills/context-slack/scripts/audit.mjs
+node skills/context-slack/scripts/audit.mjs --transcript session.json --window 128000 --json
+```
+
+(or `cd skills/context-slack` and drop the prefix — the npm scripts `npm run audit` / `npm run compact` do the same.)
+
+Output:
+
+```
+# context-slack audit
+
+- Window (usable): 192,000 tokens (200,000 minus 8,000 reserved)
+- Estimated usage: 148,300 tokens (77.2%)
+- Remaining slack: 22.8% (target ≥ 20.0%)
+- Status: WARN (warn at 70.0%, compact at 80.0%)
+
+| Category | Tokens | Share |
+| --- | ---: | ---: |
+| tool outputs | 91,200 | 61.5% |
+...
+```
+
+Exit code `0` means healthy, `2` means you are at or above the warn threshold — so the audit can gate a workflow in a one-liner.
+
+The transcript may be a JSON array of messages, `{ "messages": [...] }`, or plain text. Messages accept `{ "role", "content" }` where `content` is a string or an array of blocks. Tokens are estimated as characters ÷ `token_estimate.chars_per_token` (3.8 by default) — close enough to decide *whether* to prune, not a billing figure.
+
+### Build a compaction brief
+
+```bash
+node skills/context-slack/scripts/compact.mjs --transcript session.json --focus "auth refactor" --out brief.md
+```
+
+Six sections, extracted from the transcript and ordered by the retention priorities. Safety/auth/security material is copied verbatim per `compaction.preserve_verbatim`. Anything the script cannot infer is marked `TODO` — the brief is a base you edit, not an autopilot summary.
+
+## Configuration
+
+`context-slack-config.yaml` is the only place to tune behaviour:
+
+```yaml
+thresholds:
+  audit_warn: 0.70   # warn at 70% of the usable window
+  compact_at: 0.80   # compact now at 80%
+  slack_min: 0.20    # free space that must always remain
+compaction:
+  preserve_verbatim: [security, auth, secrets, ...]
+delegation:
+  default: inline
+```
+
+Pass a different file with `--config path/to/config.yaml`. The scripts read the subset they need with a tiny built-in YAML reader, so there are no dependencies to install.
+
+## Repository layout
+
+```
+skills/context-slack/          # the skill itself (the path agents discover)
+├── SKILL.md                   # frontmatter + workflow (progressive disclosure)
+├── context-slack-config.yaml  # thresholds, retention order, delegation defaults
+├── references/
+│   ├── compaction-template.md
+│   ├── delegation-decision-tree.md
+│   └── retention-priorities.md
+├── scripts/
+│   ├── audit.mjs
+│   └── compact.mjs
+├── package.json
+└── README.md
+.claude-plugin/
+├── plugin.json
+└── marketplace.json
+```
+
+`SKILL.md` stays short on purpose and points at `references/` one layer at a time — reading the delegation tree while you are still auditing would waste exactly the context this skill exists to protect.
+
+## License
+
+MIT
