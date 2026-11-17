@@ -14,7 +14,7 @@
  * next step. Safety/auth material is copied verbatim (compaction.preserve_verbatim).
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,14 +33,14 @@ Options:
   --focus <topic>       Subject to prioritise when selecting content.
   --config <path>       Config file (default: ../context-slack-config.yaml).
   --template <path>     Template file (default: ../references/compaction-template.md).
-  --out <path>          Write the brief to a file instead of stdout.
+  --out <path>          Write the brief to a file instead of stdout. Refuses to
+                        replace an existing file unless --force is given.
+  --force               Allow --out to overwrite an existing file.
   -h, --help            Show this help.
 
 The brief is deterministic: it extracts and orders what is already in the
 transcript. Review it, fix the parts marked TODO, then keep it as the new
 working context.`;
-
-const SECTION_KEYS = ['objective', 'decisions', 'state', 'files', 'constraints', 'next'];
 
 const FALLBACK_HEADINGS = {
   objective: '1. Objective',
@@ -50,6 +50,28 @@ const FALLBACK_HEADINGS = {
   constraints: '5. Constraints',
   next: '6. Next step',
 };
+
+// ------------------------------------------------------------------- secrets
+
+// A brief quotes real session text, and real sessions contain tokens. Anything
+// that looks like a credential is masked with a visible label, so nothing ever
+// disappears silently.
+const SECRET_PATTERNS = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[REDACTED:private-key]'],
+  [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g, '[REDACTED:github-token]'],
+  [/\bsk-[A-Za-z0-9_-]{16,}\b/g, '[REDACTED:api-key]'],
+  [/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED:aws-key]'],
+  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[REDACTED:jwt]'],
+  [/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{16,}/gi, '[REDACTED:auth-header]'],
+  [/\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s/@]+@/gi, '[REDACTED:credentials-in-url]@'],
+];
+
+function redactSecrets(text, config) {
+  if (!text || (config && config.redact_secrets === false)) return text;
+  let out = String(text);
+  for (const [pattern, label] of SECRET_PATTERNS) out = out.replace(pattern, label);
+  return out;
+}
 
 // ---------------------------------------------------------------- arguments
 
@@ -63,9 +85,11 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '-h' || arg === '--help') out.help = true;
+    else if (arg === '--force') out.force = true;
     else if (['--transcript', '--focus', '--out', '--config', '--template'].includes(arg)) {
       const value = argv[i + 1];
-      if (value === undefined) die(`missing value for ${arg}`);
+      // `--out --force` means the path is missing, not that it is called --force.
+      if (value === undefined || value.startsWith('--')) die(`missing value for ${arg}`);
       out[arg.slice(2)] = value;
       i += 1;
     } else if (arg.startsWith('--')) die(`unknown option ${arg}`);
@@ -123,6 +147,11 @@ function parseYaml(source) {
       const key = parseScalar(match[1]);
       const rest = match[2].trim();
       index += 1;
+      // A config file must never reshape the object model.
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+        while (index < lines.length && lines[index].indent > indent) index += 1;
+        continue;
+      }
       if (rest !== '') map[key] = rest.startsWith('[') ? parseInlineList(rest) : parseScalar(rest);
       else if (index < lines.length && lines[index].indent > indent) {
         const next = lines[index];
@@ -142,6 +171,7 @@ function loadConfig(configPath) {
   const defaults = {
     compaction: { preserve_verbatim: [], max_bullets_per_section: 12, max_chars_per_bullet: 240 },
     retention_priority: ['decisions', 'constraints', 'code', 'examples', 'prose'],
+    redact_secrets: true,
   };
   if (!configPath || !existsSync(configPath)) return defaults;
   let parsed = {};
@@ -156,6 +186,7 @@ function loadConfig(configPath) {
     retention_priority: Array.isArray(parsed.retention_priority)
       ? parsed.retention_priority
       : defaults.retention_priority,
+    redact_secrets: parsed.redact_secrets === false ? false : true,
   };
 }
 
@@ -276,8 +307,9 @@ function codeBlocks(text) {
 }
 
 function trimTo(text, max) {
-  const clean = text.replace(/\s+/g, ' ').trim();
-  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+  const clean = String(text).replace(/\s+/g, ' ').trim();
+  const limit = Math.max(20, Math.floor(Number(max)) || 20);
+  return clean.length > limit ? `${clean.slice(0, limit - 1)}…` : clean;
 }
 
 function uniquePush(list, seen, value) {
@@ -287,9 +319,22 @@ function uniquePush(list, seen, value) {
   list.push(value);
 }
 
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Whole-word match. A substring test made "auth" fire on "author", quoting
+ * unrelated prose as security material.
+ */
 function isVerbatim(text, topics) {
-  const lower = text.toLowerCase();
-  return topics.some((topic) => topic && lower.includes(String(topic).toLowerCase()));
+  if (!text) return false;
+  return topics.some((topic) => {
+    if (!topic) return false;
+    const pattern = new RegExp(
+      `(^|[^\\p{L}\\p{N}_])${escapeRegex(String(topic))}([^\\p{L}\\p{N}_]|$)`,
+      'iu',
+    );
+    return pattern.test(text);
+  });
 }
 
 function templateHeadings(templatePath) {
@@ -298,7 +343,13 @@ function templateHeadings(templatePath) {
     console.error(`context-slack compact: template not found at ${templatePath}; using built-in headings`);
     return headings;
   }
-  const body = readFileSync(templatePath, 'utf8');
+  let body;
+  try {
+    body = readFileSync(templatePath, 'utf8');
+  } catch (error) {
+    console.error(`context-slack compact: template unreadable (${error.message}); using built-in headings`);
+    return headings;
+  }
   const found = [...body.matchAll(/^##\s+(.+)$/gm)].map((match) => match[1].trim());
   for (const heading of found) {
     const lower = heading.toLowerCase();
@@ -313,8 +364,9 @@ function templateHeadings(templatePath) {
 }
 
 function buildBrief({ messages, focus, config, headings }) {
-  const maxBullets = Number(config.compaction.max_bullets_per_section) || 12;
-  const maxChars = Number(config.compaction.max_chars_per_bullet) || 240;
+  const maxBullets = Math.max(1, Math.floor(Number(config.compaction.max_bullets_per_section)) || 12);
+  const maxChars = Math.max(40, Math.floor(Number(config.compaction.max_chars_per_bullet)) || 240);
+  const redact = (value) => redactSecrets(value, config);
   const verbatimTopics = Array.isArray(config.compaction.preserve_verbatim)
     ? config.compaction.preserve_verbatim
     : [];
@@ -373,7 +425,7 @@ function buildBrief({ messages, focus, config, headings }) {
 
   const firstUser = chat.find((message) => message.role === 'user') || chat[0];
   const objective = firstUser
-    ? `${trimTo(withoutCode(firstUser.text), 400)}${focus ? ` (focus: ${focus})` : ''}`
+    ? `${trimTo(redact(withoutCode(firstUser.text)), 400)}${focus ? ` (focus: ${focus})` : ''}`
     : focus
       ? focus
       : 'TODO: restate the objective in one sentence.';
@@ -387,7 +439,7 @@ function buildBrief({ messages, focus, config, headings }) {
 
   const bulletList = (items, empty) => {
     if (!items.length) return [`- ${empty}`];
-    return items.map((item) => `- ${trimTo(item, maxChars)}`);
+    return items.map((item) => `- ${trimTo(redact(item), maxChars)}`);
   };
 
   const lines = [];
@@ -432,9 +484,16 @@ function buildBrief({ messages, focus, config, headings }) {
   if (verbatim.length) {
     lines.push('');
     lines.push('**Preserved verbatim** (`compaction.preserve_verbatim`) — do not summarize or paraphrase:');
-    for (const block of verbatim.slice(0, 8)) {
+    const verbatimShown = verbatim.slice(0, 8);
+    for (const block of verbatimShown) {
       lines.push('');
-      lines.push(`> ${trimTo(block, maxChars * 2)}`);
+      lines.push(`> ${trimTo(redact(block), maxChars * 2)}`);
+    }
+    if (verbatim.length > verbatimShown.length) {
+      lines.push('');
+      lines.push(
+        `_${verbatim.length - verbatimShown.length} more verbatim block(s) left out to save space — none of them was summarized, so re-read the transcript for those._`,
+      );
     }
   }
   lines.push('');
@@ -456,13 +515,13 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log(USAGE);
-    process.exit(0);
+    return;
   }
   if (args.positional.length && !args.transcript) args.transcript = args.positional[0];
   if (!args.transcript) {
     console.error('context-slack compact: --transcript is required.\n');
     console.log(USAGE);
-    process.exit(0);
+    return;
   }
 
   const file = path.resolve(args.transcript);
@@ -479,7 +538,25 @@ function main() {
 
   if (args.out) {
     const outPath = path.resolve(args.out);
-    writeFileSync(outPath, `${text}\n`, 'utf8');
+    if (existsSync(outPath) && !args.force) {
+      die(`refusing to overwrite ${outPath} (pass --force to replace it)`);
+    }
+    // Write a temp file in the same directory and rename: the brief lands
+    // atomically, keeps 0600 permissions even when replacing an existing file
+    // (mode is only honoured on create), and never writes through a symlink
+    // sitting at the destination path.
+    const tempPath = `${outPath}.tmp-${process.pid}`;
+    try {
+      writeFileSync(tempPath, `${text}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+      renameSync(tempPath, outPath);
+    } catch (error) {
+      try {
+        unlinkSync(tempPath);
+      } catch {
+        // the temp file was never created
+      }
+      die(`could not write ${outPath}: ${error.message}`);
+    }
     console.error(
       `context-slack compact: wrote ${outPath} (${stats.decisions} decisions, ${stats.constraints} constraints, ${stats.files} files, ${stats.verbatim} verbatim blocks)`,
     );
@@ -489,7 +566,8 @@ function main() {
       `context-slack compact: ${stats.decisions} decisions, ${stats.constraints} constraints, ${stats.files} files, ${stats.verbatim} verbatim blocks`,
     );
   }
-  process.exit(0);
+  // Let Node flush stdout instead of risking a truncated brief through a pipe.
+  process.exitCode = 0;
 }
 
 main();

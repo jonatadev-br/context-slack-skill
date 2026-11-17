@@ -21,6 +21,11 @@ context_window:
   tokens: 200000
   reserve_output_tokens: 8000
 
+# Mask credential-shaped strings (tokens, keys, private keys, passwords in URLs)
+# in reports and briefs. Set to false only if you know the output never leaves
+# your machine: redaction is what keeps a report safe to paste into a ticket.
+redact_secrets: true
+
 token_estimate:
   # Fallback ratio for anything not listed below.
   chars_per_token: 3.8

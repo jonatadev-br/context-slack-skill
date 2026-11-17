@@ -164,6 +164,18 @@ skills/context-slack/          # the skill itself (the path agents discover)
 
 `SKILL.md` stays short on purpose and points at `references/` one layer at a time — reading the delegation tree while you are still auditing would waste exactly the context this skill exists to protect.
 
+## Security notes
+
+The scripts read untrusted files and print them back into a terminal or a context window, so they are written to be boring on purpose:
+
+- **Zero dependencies, no network, no shell.** No `eval`, no `child_process`, no dynamic `require`. The YAML reader is ~40 lines of parsing, not a loader that can execute anything.
+- **Credential redaction.** Tokens, API keys, JWTs, private keys and passwords in URLs are masked as `[REDACTED:type]` in reports and briefs. The label is deliberate: nothing silently disappears. Turn it off with `redact_secrets: false` only for output that never leaves your machine.
+- **Compaction briefs are not overwritten by accident.** `--out` refuses an existing path unless you pass `--force`, writes through a unique temp file and an atomic rename, and lands with `0600` permissions — a brief can quote security text.
+- **No prototype tricks from config.** Keys such as `__proto__`, `constructor` and `prototype` are ignored by the config reader.
+- **Validated inputs.** Missing values, unknown flags, non-numeric or non-positive windows are rejected with exit code `1` instead of producing a nonsense report.
+
+What it does *not* do: it never sends your transcript anywhere, and it never decides to delete anything. Pruning is guidance for the agent, and compaction only produces text.
+
 ## License
 
 MIT

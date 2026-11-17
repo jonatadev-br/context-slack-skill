@@ -41,6 +41,28 @@ array of blocks ({ "type": "text" | "tool_result", ... }).
 
 Exit codes: 0 = healthy, 2 = at or above the warn threshold.`;
 
+// ------------------------------------------------------------------- secrets
+
+// Transcripts are real work, and real work contains tokens. Preview lines and
+// reports end up in logs and in the model's own context, so anything that looks
+// like a credential is masked. The label stays so nothing disappears silently.
+const SECRET_PATTERNS = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[REDACTED:private-key]'],
+  [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g, '[REDACTED:github-token]'],
+  [/\bsk-[A-Za-z0-9_-]{16,}\b/g, '[REDACTED:api-key]'],
+  [/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED:aws-key]'],
+  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[REDACTED:jwt]'],
+  [/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{16,}/gi, '[REDACTED:auth-header]'],
+  [/\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s/@]+@/gi, '[REDACTED:credentials-in-url]@'],
+];
+
+function redactSecrets(text, config) {
+  if (!text || (config && config.redact_secrets === false)) return text;
+  let out = String(text);
+  for (const [pattern, label] of SECRET_PATTERNS) out = out.replace(pattern, label);
+  return out;
+}
+
 // ---------------------------------------------------------------- arguments
 
 function parseArgs(argv) {
@@ -51,10 +73,18 @@ function parseArgs(argv) {
     else if (arg === '--json') out.json = true;
     else if (arg === '--transcript' || arg === '--config' || arg === '--window') {
       const value = argv[i + 1];
-      if (value === undefined) die(`missing value for ${arg}`);
+      // `--transcript --json` means the value is missing, not that the file is
+      // called "--json".
+      if (value === undefined || value.startsWith('--')) die(`missing value for ${arg}`);
       if (arg === '--transcript') out.transcript = value;
       if (arg === '--config') out.config = value;
-      if (arg === '--window') out.window = Number(value);
+      if (arg === '--window') {
+        const tokens = Number(value);
+        if (!Number.isFinite(tokens) || tokens <= 0) {
+          die(`--window must be a positive number of tokens (got "${value}")`);
+        }
+        out.window = tokens;
+      }
       i += 1;
     } else if (arg.startsWith('--')) die(`unknown option ${arg}`);
     else out.positional.push(arg);
@@ -123,6 +153,11 @@ function parseYaml(source) {
       const key = parseScalar(match[1]);
       const rest = match[2].trim();
       index += 1;
+      // A config file must never reshape the object model.
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+        while (index < lines.length && lines[index].indent > indent) index += 1;
+        continue;
+      }
       if (rest !== '') {
         map[key] = rest.startsWith('[') ? parseInlineList(rest) : parseScalar(rest);
       } else if (index < lines.length && lines[index].indent > indent) {
@@ -149,6 +184,7 @@ function loadConfig(configPath) {
     retention_priority: ['decisions', 'constraints', 'code', 'examples', 'prose'],
     compaction: { preserve_verbatim: [], max_bullets_per_section: 12, max_chars_per_bullet: 240 },
     delegation: { default: 'inline' },
+    redact_secrets: true,
   };
   if (!configPath || !existsSync(configPath)) return defaults;
 
@@ -169,6 +205,7 @@ function loadConfig(configPath) {
       : defaults.retention_priority,
     compaction: { ...defaults.compaction, ...(parsed.compaction || {}) },
     delegation: { ...defaults.delegation, ...(parsed.delegation || {}) },
+    redact_secrets: parsed.redact_secrets === false ? false : true,
   };
 }
 
@@ -315,7 +352,11 @@ function classify(parts, config) {
       chars[key] += value;
       partTokens += Math.ceil(value / ratio(key));
     }
-    heaviest.push({ role: part.role, tokens: partTokens, preview: part.text.slice(0, 70).replace(/\s+/g, ' ') });
+    heaviest.push({
+      role: part.role,
+      tokens: partTokens,
+      preview: redactSecrets(part.text, config).slice(0, 70).replace(/\s+/g, ' '),
+    });
   }
 
   const tokens = {};
@@ -362,7 +403,9 @@ function buildReport({ tokens, chars, heaviest, window, usable, usedTokens, conf
   lines.push('');
   lines.push(`- Window (usable): **${usable.toLocaleString('en-US')}** tokens (${window.toLocaleString('en-US')} minus ${(window - usable).toLocaleString('en-US')} reserved)`);
   lines.push(`- Estimated usage: **${usedTokens.toLocaleString('en-US')}** tokens (${percent(used)})`);
-  lines.push(`- Remaining slack: **${percent(slack)}** (target ≥ ${percent(minSlack)})`);
+  // A negative slack is honest but confusing to read; say it in words.
+  const slackText = slack < 0 ? `over budget by ${percent(-slack)}` : percent(slack);
+  lines.push(`- Remaining slack: **${slackText}** (target ≥ ${percent(minSlack)})`);
   lines.push(`- Status: **${status}** (warn at ${percent(warn)}, compact at ${percent(compact)})`);
   lines.push('');
   lines.push('| Category | Tokens | Share |');
@@ -401,7 +444,7 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log(USAGE);
-    process.exit(0);
+    return;
   }
   if (args.positional.length && !args.transcript) args.transcript = args.positional[0];
 
@@ -418,7 +461,7 @@ function main() {
   } else {
     console.error('context-slack audit: no transcript provided.\n');
     console.log(USAGE);
-    process.exit(0);
+    return;
   }
 
   if (!raw.trim()) die('transcript is empty');
@@ -428,8 +471,15 @@ function main() {
   const parts = messages.flatMap(messageParts);
   const { chars, tokens, heaviest } = classify(parts, config);
 
-  const window = Number(args.window) || Number(config.context_window.tokens) || 200000;
-  const reserved = Number(config.context_window.reserve_output_tokens) || 0;
+  const configuredWindow = Number(config.context_window.tokens);
+  const window =
+    Number.isFinite(args.window) && args.window > 0
+      ? args.window
+      : Number.isFinite(configuredWindow) && configuredWindow > 0
+        ? configuredWindow
+        : 200000;
+  const configuredReserve = Number(config.context_window.reserve_output_tokens);
+  const reserved = Number.isFinite(configuredReserve) && configuredReserve > 0 ? configuredReserve : 0;
   const usable = Math.max(window - reserved, 1);
   const usedTokens = Object.values(tokens).reduce((sum, value) => sum + value, 0);
 
@@ -464,7 +514,10 @@ function main() {
     console.log(text);
   }
 
-  process.exit(used >= config.thresholds.audit_warn ? 2 : 0);
+  // process.exit() can truncate buffered stdout when it is a pipe, which would
+  // cut the report in half exactly when a caller is gating on it. Set the code
+  // and let Node flush and exit on its own.
+  process.exitCode = used >= config.thresholds.audit_warn ? 2 : 0;
 }
 
 main();
