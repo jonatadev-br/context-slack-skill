@@ -47,6 +47,20 @@ node skills/context-slack/scripts/compact.mjs --transcript session.json --focus 
 
 Full documentation, thresholds and examples: [`skills/context-slack/README.md`](skills/context-slack/README.md).
 
+## Verification status
+
+Both install paths were exercised against this repository at `v0.1.0`:
+
+| Check | Result |
+| --- | --- |
+| `claude plugin validate --strict .` | passes (marketplace + plugin directory checks, no warnings) |
+| `claude plugin marketplace add <owner>/context-slack-skill` + `/plugin install` | installs, skill listed as `Skills (1) context-slack` |
+| `npx ai-agent-skills install <owner>/context-slack-skill` | installs to `~/.claude/skills/context-slack` |
+| `node scripts/audit.mjs` on a test transcript | reports usage %, remaining slack, exit `0`/`2` by threshold |
+| `node scripts/compact.mjs` on a test transcript | emits the six sections, safety lines kept verbatim |
+
+The `audit` numbers are heuristic estimates (characters ÷ 3.8), good for deciding *whether* to prune, not for billing.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
