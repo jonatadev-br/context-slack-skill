@@ -13,6 +13,7 @@
   },
   "scripts": {
     "audit": "node scripts/audit.mjs",
-    "compact": "node scripts/compact.mjs"
+    "compact": "node scripts/compact.mjs",
+    "test": "node scripts/test-security.mjs"
   }
 }
