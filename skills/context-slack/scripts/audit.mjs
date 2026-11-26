@@ -539,4 +539,20 @@ function main() {
   process.exitCode = used >= config.thresholds.audit_warn ? 2 : 0;
 }
 
-main();
+export {
+  redactSecrets,
+  parseYaml,
+  loadConfig,
+  parseTranscript,
+  normalise,
+  sessionEntries,
+  messageParts,
+  classify,
+  buildReport,
+  parseArgs,
+}
+
+// Executa apenas quando o script e chamado diretamente (nao quando importado para testes).
+if (process.argv[1] === import.meta.url) {
+  main()
+}

@@ -572,4 +572,17 @@ function main() {
   process.exitCode = 0;
 }
 
-main();
+export {
+  redactSecrets,
+  loadConfig,
+  parseTranscript,
+  normalise,
+  toMessages,
+  buildBrief,
+  parseArgs,
+}
+
+// Executa apenas quando o script e chamado diretamente (nao quando importado para testes).
+if (process.argv[1] === import.meta.url) {
+  main()
+}
